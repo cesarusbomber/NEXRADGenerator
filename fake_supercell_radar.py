@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageOps
 import math
 import random
 import sys
 from datetime import datetime
 import time
+import os
 
-WIDTH, HEIGHT = 512, 512
+WIDTH, HEIGHT = 1024, 1024
 CENTER_X, CENTER_Y = WIDTH // 2, HEIGHT // 2
 RADAR_NAME = "Bordeaux KBDX (KRAD Bordeaux)"
-BLIND_SPOT_RADIUS = 12
+BLIND_SPOT_RADIUS = 24
 
 REFLECTIVITY_COLORS = [
     (0, 5, (0, 0, 0)),
@@ -22,13 +23,15 @@ REFLECTIVITY_COLORS = [
 ]
 
 VELOCITY_COLORS = [
-    (-80, -60, (0, 0, 139)),
-    (-60, -40, (0, 0, 255)),
-    (-40, -20, (135, 206, 235)),
-    (-20, 0, (255, 255, 255)),
-    (0, 20, (255, 182, 193)),
-    (20, 40, (255, 105, 180)),
-    (40, 60, (255, 20, 147)),
+    (-120, -80, (0, 0, 139)),
+    (-80, -60, (0, 0, 255)),
+    (-60, -40, (135, 206, 235)),
+    (-40, -20, (255, 255, 255)),
+    (-20, 0, (255, 182, 193)),
+    (0, 20, (255, 105, 180)),
+    (20, 40, (255, 20, 147)),
+    (40, 60, (139, 0, 0)),
+    (60, 120, (128, 0, 128)),
 ]
 
 def lerp_color(c1, c2, t):
@@ -44,7 +47,7 @@ def get_text_size(font, text):
     bbox = font.getbbox(text)
     return bbox[2] - bbox[0], bbox[3] - bbox[1]
 
-def draw_grid(draw, spacing=40):
+def draw_grid(draw, spacing=80):
     ring_color = (60, 60, 60)
     for r in range(spacing, WIDTH // 2, spacing):
         draw.ellipse([
@@ -58,7 +61,7 @@ def draw_grid(draw, spacing=40):
         y = CENTER_Y + math.sin(angle_rad) * (HEIGHT // 2)
         draw.line([CENTER_X, CENTER_Y, x, y], fill=ring_color, width=1)
 
-def add_speckle_noise(pixels, chance=0.004):
+def add_speckle_noise(pixels, chance=0.002):
     for y in range(HEIGHT):
         for x in range(WIDTH):
             if random.random() < chance:
@@ -66,23 +69,23 @@ def add_speckle_noise(pixels, chance=0.004):
                 pixels[x, y] = (noise, noise, noise)
 
 def generate_reflectivity_image(stage=1, intensity=50):
-    img = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
+    img = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
     pixels = img.load()
 
     max_reflectivity = [35, 55, 75][stage - 1] * (intensity / 99)
-    storm_radius = [100, 140, 180][stage - 1]
+    storm_radius = [200, 280, 360][stage - 1]
     num_lobes = [1, 2, 3][stage - 1]
 
     random.seed(int(time.time() // 10))
     lobe_centers = []
     for _ in range(num_lobes):
-        cx = CENTER_X + random.randint(-80, 80)
-        cy = CENTER_Y + random.randint(-80, 80)
+        cx = CENTER_X + random.randint(-160, 160)
+        cy = CENTER_Y + random.randint(-160, 160)
         strength = random.uniform(max_reflectivity * 0.5, max_reflectivity)
-        radius = random.randint(40, 80)
+        radius = random.randint(80, 160)
         lobe_centers.append((cx, cy, strength, radius))
 
-    hook_lobe = (CENTER_X + int(storm_radius * 0.6), CENTER_Y + 20,
+    hook_lobe = (CENTER_X + int(storm_radius * 0.6), CENTER_Y + 40,
                  max_reflectivity * 0.8, int(storm_radius * 0.6))
 
     for y in range(HEIGHT):
@@ -110,18 +113,18 @@ def generate_reflectivity_image(stage=1, intensity=50):
             val = max(0, min(80, val))
 
             color = get_color_from_table(val, REFLECTIVITY_COLORS)
-            pixels[x, y] = color
+            pixels[x, y] = color + (180,)
 
-    add_speckle_noise(pixels)
-    img = img.filter(ImageFilter.GaussianBlur(radius=1.0))
+    add_speckle_noise(pixels, chance=0.001)
+    img = img.filter(ImageFilter.GaussianBlur(radius=2.0))
     return img
 
 def generate_velocity_image(stage=1, intensity=50):
-    img = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
+    img = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
     pixels = img.load()
 
-    max_radius = [100, 140, 180][stage - 1]
-    velocity_amp = [30, 50, 80][stage - 1] * (intensity / 99)
+    max_radius = [200, 280, 360][stage - 1]
+    velocity_amp = [60, 80, 120][stage - 1] * (intensity / 99)
 
     random.seed(int(time.time() // 10))
 
@@ -135,15 +138,25 @@ def generate_velocity_image(stage=1, intensity=50):
 
             angle = math.atan2(dy, dx)
             base_val = velocity_amp * math.sin(2 * angle) * (1 - dist / max_radius)
-            noise = random.uniform(-7, 7) * (intensity / 99)
-            val = max(-80, min(60, base_val + noise))
+            noise = random.uniform(-10, 10) * (intensity / 99)
+            val = max(-120, min(120, base_val + noise))
 
             color = get_color_from_table(val, VELOCITY_COLORS)
-            pixels[x, y] = color
+            pixels[x, y] = color + (180,)
 
-    add_speckle_noise(pixels, chance=0.002)
-    img = img.filter(ImageFilter.GaussianBlur(radius=1.0))
+    add_speckle_noise(pixels, chance=0.001)
+    img = img.filter(ImageFilter.GaussianBlur(radius=2.0))
     return img
+
+def overlay_radar_on_map(radar_img):
+    map_path = "image.png"
+    if os.path.exists(map_path):
+        map_img = Image.open(map_path).convert("RGBA")
+        map_img = map_img.resize((WIDTH, HEIGHT))
+        combined = Image.alpha_composite(map_img, radar_img)
+        return combined
+    else:
+        return radar_img
 
 def draw_colorbar(draw, x, y, width, height, colors, labels, font):
     seg_width = width / len(colors)
@@ -168,25 +181,26 @@ def main():
 
     print(f"[INFO] Generating {'Velocity' if velocity_mode else 'Reflectivity'} image (stage {stage}, intensity {intensity})...")
 
-    img = generate_velocity_image(stage, intensity) if velocity_mode else generate_reflectivity_image(stage, intensity)
-    draw = ImageDraw.Draw(img)
+    radar_img = generate_velocity_image(stage, intensity) if velocity_mode else generate_reflectivity_image(stage, intensity)
+    radar_img = overlay_radar_on_map(radar_img)
+
+    draw = ImageDraw.Draw(radar_img)
 
     try:
-        font_small = ImageFont.truetype("arial.ttf", 14)
-        font_big = ImageFont.truetype("arial.ttf", 24)
+        font_small = ImageFont.truetype("arial.ttf", 20)
+        font_big = ImageFont.truetype("arial.ttf", 36)
     except:
         font_small = ImageFont.load_default()
         font_big = ImageFont.load_default()
 
-    # Draw grid
     draw_grid(draw)
 
-    # Radar blind spot and label
+    # Radar blind spot
     center = (CENTER_X, CENTER_Y)
     draw.ellipse([
         (center[0] - BLIND_SPOT_RADIUS, center[1] - BLIND_SPOT_RADIUS),
         (center[0] + BLIND_SPOT_RADIUS, center[1] + BLIND_SPOT_RADIUS)],
-        fill=(0, 0, 0),
+        fill=(0, 0, 0, 255),
     )
 
     text_lines = ["KBDX", "(KRAD Bordeaux)"]
@@ -197,27 +211,26 @@ def main():
         draw.text((center[0] - text_width // 2, start_y), line, fill="white", font=font_small)
         start_y += text_height
 
-    # Time stamp and product label
     utcnow = datetime.utcnow()
     timestamp_str = f"{utcnow.month}_{utcnow.day}_{utcnow.year}_{utcnow.strftime('%H%M')}UTC"
     product = "VELOCITYRADIAL" if velocity_mode else "COMPOSITEREFLECTIVITY"
 
-    draw.text((20, 20), f"RADAR: {RADAR_NAME}", fill="white", font=font_big)
-    draw.text((20, 50), "Storm Relative Velocity" if velocity_mode else "Composite Reflectivity", fill="white", font=font_big)
-    draw.text((20, 80), utcnow.strftime("%Y-%m-%d %H:%M UTC"), fill="white", font=font_big)
+    draw.text((40, 40), f"RADAR: {RADAR_NAME}", fill="white", font=font_big)
+    draw.text((40, 90), "Storm Relative Velocity" if velocity_mode else "Composite Reflectivity", fill="white", font=font_big)
+    draw.text((40, 140), utcnow.strftime("%Y-%m-%d %H:%M UTC"), fill="white", font=font_big)
 
     # Colorbar
     if velocity_mode:
         colors = [c for _, _, c in VELOCITY_COLORS]
-        labels = ["-80", "-60", "-40", "-20", "0", "20", "40", "60"]
+        labels = ["-120", "-80", "-60", "-40", "-20", "0", "20", "40", "60", "120"]
     else:
         colors = [c for _, _, c in REFLECTIVITY_COLORS]
         labels = ["0", "5", "20", "30", "40", "50", "60", "80"]
 
-    draw_colorbar(draw, 50, HEIGHT - 80, 410, 30, colors, labels, font_small)
+    draw_colorbar(draw, 60, HEIGHT - 100, 900, 40, colors, labels, font_small)
 
     output_filename = f"{timestamp_str}_BORDEAUX_{product}VIEW.png"
-    img.save(output_filename)
+    radar_img.save(output_filename)
     print(f"[INFO] Saved image to {output_filename}")
 
 if __name__ == "__main__":
